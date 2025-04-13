@@ -25,6 +25,7 @@ pip install -e .
 
 ```bash
 pipx install .
+pipx inject ghopper click
 ```
 
 > ⚠️ Make sure `click` is listed in your `install_requires` in `setup.py`.
