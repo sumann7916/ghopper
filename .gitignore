@@ -1,0 +1,30 @@
+# Python bytecode files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+env/
+
+# Config files
+config.json
+
+# Dependency directories
+venv/
+*.egg-info/
+*.eggs/
+
+# IDE files (for VSCode, you can adjust for other editors if needed)
+.vscode/
+
+# Distribution and packaging files
+*.egg
+*.dist-info/
+*.manifest
+
+# Cache and logs
+*.log
+*.cache
+CACHEDIR.TAG
+w
