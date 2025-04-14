@@ -4,6 +4,8 @@ import subprocess
 import webbrowser
 import json
 import os
+import re
+from urllib.parse import urlparse
 from pathlib import Path
 
 # Config path: ~/.config/ghopper/config.json
@@ -22,14 +24,12 @@ def load_config():
 
 def save_config(data):
     """Save configuration to the JSON file."""
-    print(str(CONFIG_PATH))
     try:
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         with open(CONFIG_PATH, 'w') as f:
             json.dump(data, f, indent=4)
         click.echo(f"✅ Config saved at {CONFIG_PATH}")
     except Exception as e:
-        
         click.echo(f"Error saving config: {e}")
 
 def get_current_git_repo():
@@ -42,6 +42,33 @@ def get_current_git_repo():
         return remote_url if remote_url else None
     except subprocess.CalledProcessError:
         return None
+
+def normalize_repo_url(url):
+    """Normalize GitHub URLs to a comparable form."""
+    url = url.strip().rstrip(".git")
+
+    if url.startswith("git@"):
+        match = re.match(r"git@([\w.-]+):([\w./-]+)", url)
+        if match:
+            host, path = match.groups()
+            # Clean up host to remove any alias (e.g., github.com-alias → github.com)
+            base_host = host.split("-")[0]
+            return f"{base_host}/{path}".lower()
+
+    elif url.startswith("http"):
+        parsed = urlparse(url)
+        base_host = parsed.netloc.split(":")[0].split("-")[0]
+        return f"{base_host}{parsed.path}".strip("/").lower()
+
+    return url.lower()
+
+def find_alias_by_repo_url(config, repo_url):
+    """Find the alias for a given repo URL by normalized comparison."""
+    normalized = normalize_repo_url(repo_url)
+    for alias, info in config["repos"].items():
+        if normalize_repo_url(info["url"]) == normalized:
+            return alias
+    return None
 
 @click.group()
 def cli():
@@ -59,7 +86,7 @@ def view(alias):
         if not repo_url:
             click.echo("Not in a Git repo or can't detect remote.")
             return
-        alias = next((k for k, v in config["repos"].items() if v["url"] == repo_url), None)
+        alias = find_alias_by_repo_url(config, repo_url)
         if not alias:
             click.echo("Repo not found in config.")
             return
@@ -72,12 +99,31 @@ def view(alias):
         click.echo(f"Alias '{alias}' not found.")
 
 @cli.command()
-@click.argument("alias")
-@click.argument("target")
+@click.argument("args", nargs=-1)
 @click.option("--from", "from_branch", default=None, help="Branch to compare from")
-def pr(alias, target, from_branch):
+def pr(args, from_branch):
     """Open a GitHub PR compare view."""
     config = load_config()
+
+    if len(args) == 1:
+        alias = None
+        target = args[0]
+    elif len(args) == 2:
+        alias, target = args
+    else:
+        click.echo("Usage: pr [alias] <target>")
+        return
+
+    if not alias:
+        repo_url = get_current_git_repo()
+        if not repo_url:
+            click.echo("Not in a Git repo or can't detect remote.")
+            return
+        alias = find_alias_by_repo_url(config, repo_url)
+        if not alias:
+            click.echo("Repo not found in config.")
+            return
+
     repo = config["repos"].get(alias)
     if not repo:
         click.echo(f"Alias '{alias}' not found.")
@@ -101,6 +147,7 @@ def pr(alias, target, from_branch):
     webbrowser.open(url)
     click.echo(f"🔀 PR Compare: {url}")
 
+
 @cli.command()
 @click.argument("alias")
 @click.option("--url", help="GitHub repository URL")
@@ -110,19 +157,23 @@ def pr(alias, target, from_branch):
 def add(alias, url, prod, pre, dev):
     """Add a repository to config."""
     config = load_config()
+
     if not url:
         url = get_current_git_repo()
     if not url:
-        click.echo("No URL and not in a Git repo.")
+        click.echo("No URL provided and not in a Git repo.")
         return
+
+    normalized_url = normalize_repo_url(url)
 
     branches = {k: v for k, v in {"prod": prod, "pre": pre, "dev": dev}.items() if v}
     config["repos"][alias] = {
-        "url": url,
+        "url": f"https://{normalized_url}",
         "branches": branches
     }
+
     save_config(config)
-    click.echo(f"✅ Added repo '{alias}' → {url}")
+    click.echo(f"✅ Added repo '{alias}' → https://{normalized_url}")
 
 @cli.command()
 def list():
@@ -132,6 +183,7 @@ def list():
     if not repos:
         click.echo("No repos added yet.")
         return
+
     for alias, info in repos.items():
         click.echo(f"{alias} → {info['url']}")
         for key, branch in info["branches"].items():
@@ -148,6 +200,33 @@ def remove(alias):
         click.echo(f"❌ Removed '{alias}'")
     else:
         click.echo(f"Alias '{alias}' not found.")
+
+
+@cli.command()
+@click.argument("alias")
+@click.option("--prod", help="New production branch")
+@click.option("--pre", help="New pre-production branch")
+@click.option("--dev", help="New development branch")
+def modify(alias, prod, pre, dev):
+    """Modify the branches of an existing repo."""
+    config = load_config()
+
+    repo = config["repos"].get(alias)
+    if not repo:
+        click.echo(f"Alias '{alias}' not found.")
+        return
+
+    # Update branches
+    if prod:
+        repo["branches"]["prod"] = prod
+    if pre:
+        repo["branches"]["pre"] = pre
+    if dev:
+        repo["branches"]["dev"] = dev
+
+    save_config(config)
+    click.echo(f"✅ Updated branches for '{alias}'")
+
 
 if __name__ == "__main__":
     cli()
