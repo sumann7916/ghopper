@@ -115,14 +115,15 @@ def actions():
     click.echo("")
     click.echo("📋 Repository Management:")
     click.echo("  ghopper view [alias]     - Open GitHub repo page")
-    click.echo("  ghopper add [alias]       - Add new repository")
+    click.echo("  ghopper add [alias] -b key=branch  - Add new repository with branch mappings")
     click.echo("  ghopper list             - List all configured repos")
     click.echo("  ghopper remove <alias>   - Remove repository")
-    click.echo("  ghopper modify [alias]   - Modify branch mappings")
+    click.echo("  ghopper modify [alias] -b key=branch  - Modify branch mappings")
     click.echo("")
     click.echo("🔀 Pull Requests & Branches:")
     click.echo("  ghopper pr [alias] <target> - Open PR compare view")
-    click.echo("  ghopper checkout <env> [alias] - Checkout to prod/pre/dev branch")
+    click.echo("  ghopper checkout <branch_key> [alias] - Checkout to any configured branch")
+    click.echo("  ghopper approve <pr_url> - Approve a GitHub PR")
     click.echo("")
     click.echo("💾 Git Operations:")
     click.echo("  ghopper commit -m <msg>  - Commit and cherry-pick to dev/pre")
@@ -137,7 +138,8 @@ def actions():
     click.echo("💡 Tips:")
     click.echo("  • Use 'va' as shortcut for 'actions'")
     click.echo("  • Omit [alias] to use current git repo context")
-    click.echo("  • Branch environments: prod, pre, dev")
+    click.echo("  • Branch keys can be anything: prod, pre, dev, sandbox, sandbox2, etc.")
+    click.echo("  • Example: ghopper add myrepo -b prod=main -b sandbox=sandbox-branch")
 
 @cli.command()
 @click.argument("args", nargs=-1)
@@ -198,10 +200,8 @@ def auth(token):
 @cli.command()
 @click.argument("alias", required=False)
 @click.option("--url", help="GitHub repository URL")
-@click.option("--prod", help="Production branch")
-@click.option("--pre", help="Pre-production branch")
-@click.option("--dev", help="Development branch")
-def add(alias, url, prod, pre, dev):
+@click.option("--branch", "-b", multiple=True, help="Branch mapping in format key=branch_name (e.g., prod=main, sandbox=sandbox-branch)")
+def add(alias, url, branch):
     """Add a repository to config."""
     config = load_config()
 
@@ -216,7 +216,15 @@ def add(alias, url, prod, pre, dev):
     if not alias:
         alias = Path(normalized_url).name.replace(".git", "")
 
-    branches = {k: v for k, v in {"prod": prod, "pre": pre, "dev": dev}.items() if v}
+    # Parse branch mappings from key=value format
+    branches = {}
+    for b in branch:
+        if "=" not in b:
+            click.echo(f"⚠️  Skipping invalid branch format: '{b}'. Use key=branch_name")
+            continue
+        key, branch_name = b.split("=", 1)
+        branches[key.strip()] = branch_name.strip()
+
     config["repos"][alias] = {
         "url": f"https://{normalized_url}",
         "branches": branches
@@ -224,6 +232,8 @@ def add(alias, url, prod, pre, dev):
 
     save_config(config)
     click.echo(f"✅ Added repo '{alias}' → https://{normalized_url}")
+    if branches:
+        click.echo(f"   Branches: {', '.join([f'{k}={v}' for k, v in branches.items()])}")
 
 @cli.command()
 def list():
@@ -253,10 +263,9 @@ def remove(alias):
 
 @cli.command()
 @click.argument("alias", required=False)
-@click.option("--prod", help="New production branch")
-@click.option("--pre", help="New pre-production branch")
-@click.option("--dev", help="New development branch")
-def modify(alias, prod, pre, dev):
+@click.option("--branch", "-b", multiple=True, help="Branch mapping to add/update in format key=branch_name")
+@click.option("--remove", "-r", multiple=True, help="Branch key to remove")
+def modify(alias, branch, remove):
     """Modify the branches of an existing repo."""
     config = load_config()
     alias = resolve_alias_from_context(config, alias)
@@ -268,21 +277,31 @@ def modify(alias, prod, pre, dev):
         click.echo(f"Alias '{alias}' not found.")
         return
 
-    if prod:
-        repo["branches"]["prod"] = prod
-    if pre:
-        repo["branches"]["pre"] = pre
-    if dev:
-        repo["branches"]["dev"] = dev
+    # Parse and update branch mappings
+    for b in branch:
+        if "=" not in b:
+            click.echo(f"⚠️  Skipping invalid branch format: '{b}'. Use key=branch_name")
+            continue
+        key, branch_name = b.split("=", 1)
+        repo["branches"][key.strip()] = branch_name.strip()
+        click.echo(f"✅ Set {key.strip()} → {branch_name.strip()}")
+
+    # Remove specified branches
+    for key in remove:
+        if key in repo["branches"]:
+            del repo["branches"][key]
+            click.echo(f"❌ Removed branch key '{key}'")
+        else:
+            click.echo(f"⚠️  Branch key '{key}' not found")
 
     save_config(config)
     click.echo(f"✅ Updated branches for '{alias}'")
 
 @cli.command()
-@click.argument("branch_key", type=click.Choice(["prod", "pre", "dev"]))
+@click.argument("branch_key")
 @click.argument("alias", required=False)
 def checkout(branch_key, alias):
-    """Quickly checkout to a prod/pre/dev branch using alias."""
+    """Quickly checkout to any configured branch using its key (e.g., prod, sandbox, sandbox2)."""
     config = load_config()
     alias = resolve_alias_from_context(config, alias)
     if not alias:
@@ -296,6 +315,8 @@ def checkout(branch_key, alias):
     branch_name = repo["branches"].get(branch_key)
     if not branch_name:
         click.echo(f"No '{branch_key}' branch configured for alias '{alias}'")
+        available = ", ".join(repo["branches"].keys())
+        click.echo(f"Available branches: {available}")
         return
 
     try:
@@ -387,14 +408,14 @@ def commit(message):
     click.echo(f"✅ Cherry-pick complete. Commit {last_commit_hash} added to {', '.join(target_branches)}.")
 
 
-@click.command()
+@cli.command()
 @click.argument("pr_url")
 def approve(pr_url):
     """Approve a GitHub pull request by URL."""
 
     token_path = CONFIG_DIR / "token.json"
     if not token_path.exists():
-        click.echo("❌ GitHub token not found. Please store it in ~/.config/ghopper/token.json")
+        click.echo("❌ GitHub token not found. Please run 'ghopper auth' first")
         return
 
     token = json.load(open(token_path))["token"]
