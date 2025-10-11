@@ -5,6 +5,7 @@ import webbrowser
 import json
 import os
 import re
+import requests
 from urllib.parse import urlparse
 from pathlib import Path
 
@@ -106,6 +107,38 @@ def view(alias):
     else:
         click.echo(f"Alias '{alias}' not found.")
 
+@cli.command("actions")
+@cli.command("va")
+def actions():
+    """Show available actions and commands for ghopper."""
+    click.echo("🦗 ghopper - Available Actions:")
+    click.echo("")
+    click.echo("📋 Repository Management:")
+    click.echo("  ghopper view [alias]     - Open GitHub repo page")
+    click.echo("  ghopper add [alias]       - Add new repository")
+    click.echo("  ghopper list             - List all configured repos")
+    click.echo("  ghopper remove <alias>   - Remove repository")
+    click.echo("  ghopper modify [alias]   - Modify branch mappings")
+    click.echo("")
+    click.echo("🔀 Pull Requests & Branches:")
+    click.echo("  ghopper pr [alias] <target> - Open PR compare view")
+    click.echo("  ghopper checkout <env> [alias] - Checkout to prod/pre/dev branch")
+    click.echo("")
+    click.echo("💾 Git Operations:")
+    click.echo("  ghopper commit -m <msg>  - Commit and cherry-pick to dev/pre")
+    click.echo("")
+    click.echo("🔐 Authentication:")
+    click.echo("  ghopper auth             - Store GitHub token")
+    click.echo("")
+    click.echo("📖 Help:")
+    click.echo("  ghopper --help           - Show detailed help")
+    click.echo("  ghopper <command> --help - Show command-specific help")
+    click.echo("")
+    click.echo("💡 Tips:")
+    click.echo("  • Use 'va' as shortcut for 'actions'")
+    click.echo("  • Omit [alias] to use current git repo context")
+    click.echo("  • Branch environments: prod, pre, dev")
+
 @cli.command()
 @click.argument("args", nargs=-1)
 @click.option("--from", "from_branch", default=None, help="Branch to compare from")
@@ -148,6 +181,19 @@ def pr(args, from_branch):
     url = f"{repo['url']}/compare/{to_branch}...{from_branch}"
     webbrowser.open(url)
     click.echo(f"🔀 PR Compare: {url}")
+
+@cli.command()
+@click.option("--token", prompt=True, hide_input=True, help="Your GitHub Personal Access Token")
+def auth(token):
+    """Store your GitHub token securely."""
+    token_path = CONFIG_DIR / "token.json"
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+
+    with open(token_path, "w") as f:
+        json.dump({"token": token.strip()}, f, indent=4)
+
+    os.chmod(token_path, 0o600)  # Make file read/write by user only
+    click.echo(f"🔐 GitHub token saved at {token_path}")
 
 @cli.command()
 @click.argument("alias", required=False)
@@ -257,6 +303,8 @@ def checkout(branch_key, alias):
         click.echo(f"🚀 Switched to {branch_key} branch: {branch_name}")
     except subprocess.CalledProcessError:
         click.echo(f"❌ Failed to checkout branch '{branch_name}'")
+
+
 @cli.command("commit")
 @click.option('-m', '--message', required=True, help="Commit message")
 def commit(message):
@@ -337,6 +385,40 @@ def commit(message):
     # Checkout back to the original feature branch
     subprocess.check_call(["git", "checkout", current_branch])
     click.echo(f"✅ Cherry-pick complete. Commit {last_commit_hash} added to {', '.join(target_branches)}.")
+
+
+@click.command()
+@click.argument("pr_url")
+def approve(pr_url):
+    """Approve a GitHub pull request by URL."""
+
+    token_path = CONFIG_DIR / "token.json"
+    if not token_path.exists():
+        click.echo("❌ GitHub token not found. Please store it in ~/.config/ghopper/token.json")
+        return
+
+    token = json.load(open(token_path))["token"]
+    headers = {
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github+json"
+    }
+
+    match = re.match(r"https://github.com/(?P<owner>[^/]+)/(?P<repo>[^/]+)/pull/(?P<number>\d+)", pr_url)
+    if not match:
+        click.echo("❌ Invalid PR URL format.")
+        return
+
+    owner, repo, number = match.group("owner"), match.group("repo"), match.group("number")
+
+    url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{number}/reviews"
+    response = requests.post(url, headers=headers, json={"event": "APPROVE"})
+
+    if response.status_code == 200 or response.status_code == 201:
+        click.echo(f"✅ Approved PR #{number} in {owner}/{repo}")
+    else:
+        click.echo(f"❌ Failed to approve PR. Status: {response.status_code}")
+        click.echo(response.text)
+
 
 if __name__ == "__main__":
     cli()
